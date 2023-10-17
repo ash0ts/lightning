@@ -13,17 +13,14 @@
 # limitations under the License
 import inspect
 import os
-import sys
 from typing import Any, Dict
 from unittest import mock
 from unittest.mock import Mock
 
+import lightning.pytorch
 import pytest
 import torch
 import torch.distributed
-from lightning_utilities.core.imports import package_available
-
-import lightning.pytorch
 from lightning.fabric.plugins.environments import (
     KubeflowEnvironment,
     LightningEnvironment,
@@ -34,7 +31,6 @@ from lightning.fabric.plugins.environments import (
 from lightning.fabric.utilities.imports import _IS_WINDOWS
 from lightning.pytorch import Trainer
 from lightning.pytorch.accelerators import Accelerator, CPUAccelerator, CUDAAccelerator, MPSAccelerator, XLAAccelerator
-from lightning.pytorch.plugins import TransformerEnginePrecisionPlugin
 from lightning.pytorch.plugins.io import TorchCheckpointIO
 from lightning.pytorch.plugins.layer_sync import LayerSync, TorchSyncBatchNorm
 from lightning.pytorch.plugins.precision import (
@@ -58,6 +54,8 @@ from lightning.pytorch.strategies.launchers import _SubprocessScriptLauncher
 from lightning.pytorch.trainer.connectors.accelerator_connector import _AcceleratorConnector, _set_torch_flags
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.imports import _lightning_graphcore_available, _lightning_habana_available
+from lightning_utilities.core.imports import package_available
+
 from tests_pytorch.conftest import mock_cuda_count, mock_mps_count, mock_tpu_available, mock_xla_available
 from tests_pytorch.helpers.runif import RunIf
 
@@ -97,6 +95,11 @@ def test_accelerator_invalid_choice():
 def test_invalid_strategy_choice(invalid_strategy):
     with pytest.raises(ValueError, match="You selected an invalid strategy name:"):
         _AcceleratorConnector(strategy=invalid_strategy)
+
+
+def test_precision_and_precision_plugin_raises():
+    with pytest.raises(ValueError, match="both `precision=16-true` and `plugins"):
+        _AcceleratorConnector(precision="16-true", plugins=PrecisionPlugin())
 
 
 @RunIf(skip_windows=True, standalone=True)
@@ -272,7 +275,7 @@ def test_accelerator_cpu(cuda_count_0, mps_count_0):
 
 
 @pytest.mark.parametrize("device_count", [["0"], [0, "1"], ["GPU"], [["0", "1"], [0, 1]], [False]])
-def test_accelererator_invalid_type_devices(cuda_count_2, device_count):
+def test_accelerator_invalid_type_devices(cuda_count_2, device_count):
     with pytest.raises(TypeError, match=r"must be an int, a string, a sequence of ints, but you"):
         _ = Trainer(accelerator="gpu", devices=device_count)
 
@@ -481,6 +484,26 @@ def test_strategy_choice_ddp_torchelastic(_, __, mps_count_0, cuda_count_2):
 @mock.patch.dict(
     os.environ,
     {
+        "TORCHELASTIC_RUN_ID": "1",
+        "SLURM_NTASKS": "2",
+        "WORLD_SIZE": "2",
+        "RANK": "1",
+        "LOCAL_RANK": "1",
+    },
+)
+@mock.patch("lightning.fabric.accelerators.cuda.num_cuda_devices", return_value=2)
+@mock.patch("lightning.fabric.accelerators.mps.MPSAccelerator.is_available", return_value=False)
+def test_torchelastic_priority_over_slurm(*_):
+    """Test that the TorchElastic cluster environment is chosen over SLURM when both are detected."""
+    assert TorchElasticEnvironment.detect()
+    assert SLURMEnvironment.detect()
+    connector = _AcceleratorConnector(strategy="ddp")
+    assert isinstance(connector.strategy.cluster_environment, TorchElasticEnvironment)
+
+
+@mock.patch.dict(
+    os.environ,
+    {
         "CUDA_VISIBLE_DEVICES": "0",
         "KUBERNETES_PORT": "tcp://127.0.0.1:443",
         "MASTER_ADDR": "1.2.3.4",
@@ -542,7 +565,6 @@ def test_strategy_choice_ddp_cpu_slurm(cuda_count_0, strategy):
     assert trainer.strategy.local_rank == 0
 
 
-@RunIf(min_torch="1.12")
 def test_check_fsdp_strategy_and_fallback():
     with pytest.raises(
         MisconfigurationException,
@@ -1005,12 +1027,19 @@ def test_connector_auto_selection(monkeypatch, is_interactive):
         "ddp",
         "ddp_spawn",
         pytest.param("deepspeed", marks=RunIf(deepspeed=True)),
-        pytest.param("fsdp", marks=RunIf(min_torch="1.12.0")),
+        "fsdp",
     ],
 )
 def test_connector_sets_num_nodes(strategy, cuda_count_2):
     trainer = Trainer(accelerator="cuda", strategy=strategy, devices=2, num_nodes=2)
     assert trainer.strategy.num_nodes == 2
+
+
+def test_connector_num_nodes_input_validation():
+    with pytest.raises(ValueError, match="`num_nodes` must be a positive integer"):
+        _AcceleratorConnector(num_nodes=0)
+    with pytest.raises(ValueError, match="`num_nodes` must be a positive integer"):
+        _AcceleratorConnector(num_nodes=-1)
 
 
 @pytest.mark.parametrize(
@@ -1022,11 +1051,11 @@ def test_connector_sets_num_nodes(strategy, cuda_count_2):
         ("bf16-true", "auto", HalfPrecisionPlugin),
         ("16-mixed", "auto", MixedPrecisionPlugin),
         ("bf16-mixed", "auto", MixedPrecisionPlugin),
-        pytest.param("32-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_torch="1.12", min_cuda_gpus=1)),
-        pytest.param("16-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_torch="1.12", min_cuda_gpus=1)),
-        pytest.param("bf16-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_torch="1.12", min_cuda_gpus=1)),
-        pytest.param("16-mixed", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_torch="1.12", min_cuda_gpus=1)),
-        pytest.param("bf16-mixed", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_torch="1.12", min_cuda_gpus=1)),
+        pytest.param("32-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_cuda_gpus=1)),
+        pytest.param("16-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_cuda_gpus=1)),
+        pytest.param("bf16-true", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_cuda_gpus=1)),
+        pytest.param("16-mixed", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_cuda_gpus=1)),
+        pytest.param("bf16-mixed", "fsdp", FSDPPrecisionPlugin, marks=RunIf(min_cuda_gpus=1)),
         pytest.param("32-true", "deepspeed", DeepSpeedPrecisionPlugin, marks=RunIf(deepspeed=True, mps=False)),
         pytest.param("16-true", "deepspeed", DeepSpeedPrecisionPlugin, marks=RunIf(deepspeed=True, mps=False)),
         pytest.param("bf16-true", "deepspeed", DeepSpeedPrecisionPlugin, marks=RunIf(deepspeed=True, mps=False)),
@@ -1037,22 +1066,3 @@ def test_connector_sets_num_nodes(strategy, cuda_count_2):
 def test_precision_selection(precision_str, strategy_str, expected_precision_cls):
     connector = _AcceleratorConnector(precision=precision_str, strategy=strategy_str)
     assert isinstance(connector.precision_plugin, expected_precision_cls)
-
-
-def test_connector_transformer_engine(monkeypatch):
-    import lightning.fabric  # avoid breakage with standalone package
-
-    monkeypatch.setattr(
-        lightning.fabric.plugins.precision.transformer_engine, "_TRANSFORMER_ENGINE_AVAILABLE", lambda: True
-    )
-    transformer_engine_mock = Mock()
-    monkeypatch.setitem(sys.modules, "transformer_engine", transformer_engine_mock)
-    recipe_mock = Mock()
-    monkeypatch.setitem(sys.modules, "transformer_engine.common.recipe", recipe_mock)
-
-    connector = _AcceleratorConnector(precision="transformer-engine")
-    assert isinstance(connector.precision_plugin, TransformerEnginePrecisionPlugin)
-
-    precision = TransformerEnginePrecisionPlugin()
-    connector = _AcceleratorConnector(plugins=precision)
-    assert connector.precision_plugin is precision

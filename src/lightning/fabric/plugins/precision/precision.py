@@ -24,7 +24,14 @@ _PRECISION_INPUT_INT = Literal[64, 32, 16]
 _PRECISION_INPUT_STR_ALIAS_CONVERSION = {"64": "64-true", "32": "32-true", "16": "16-mixed", "bf16": "bf16-mixed"}
 _PRECISION_INPUT_STR_ALIAS = Literal["64", "32", "16", "bf16"]
 _PRECISION_INPUT_STR = Literal[
-    "transformer-engine", "16-true", "16-mixed", "bf16-true", "bf16-mixed", "32-true", "64-true"
+    "transformer-engine",
+    "transformer-engine-float16",
+    "16-true",
+    "16-mixed",
+    "bf16-true",
+    "bf16-mixed",
+    "32-true",
+    "64-true",
 ]
 _PRECISION_INPUT = Union[_PRECISION_INPUT_INT, _PRECISION_INPUT_STR, _PRECISION_INPUT_STR_ALIAS]
 
@@ -46,7 +53,11 @@ class Precision:
         """
         return module
 
-    def init_context(self) -> ContextManager:
+    def tensor_init_context(self) -> ContextManager:
+        """Controls how tensors get created (device, dtype)."""
+        return nullcontext()
+
+    def module_init_context(self) -> ContextManager:
         """Instantiate module parameters or tensors in the precision type this plugin handles.
 
         This is optional and depends on the precision limitations during optimization.

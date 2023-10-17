@@ -31,7 +31,7 @@ from lightning.fabric.strategies.registry import _StrategyRegistry
 from lightning.fabric.utilities.apply_func import move_data_to_device
 from lightning.fabric.utilities.imports import _TORCH_GREATER_EQUAL_1_13, _TORCH_GREATER_EQUAL_2_0
 from lightning.fabric.utilities.init import _EmptyInit
-from lightning.fabric.utilities.types import _PATH, _Stateful, Optimizable, ReduceOp
+from lightning.fabric.utilities.types import _PATH, Optimizable, ReduceOp, _Stateful
 
 TBroadcast = TypeVar("TBroadcast")
 TReduce = TypeVar("TReduce")
@@ -50,7 +50,9 @@ class Strategy(ABC):
     ) -> None:
         self._accelerator: Optional[Accelerator] = accelerator
         self._checkpoint_io: Optional[CheckpointIO] = checkpoint_io
-        self._precision: Optional[Precision] = precision
+        self._precision: Optional[Precision] = None
+        # Call the precision setter for input validation
+        self.precision = precision  # type: ignore[assignment]
         self._launcher: Optional[_Launcher] = None
         self._backward_sync_control: Optional[_BackwardSyncControl] = None
 
@@ -118,10 +120,11 @@ class Strategy(ABC):
 
     def tensor_init_context(self) -> ContextManager:
         """Controls how tensors get created (device, dtype)."""
+        precision_init_ctx = self.precision.tensor_init_context()
         stack = ExitStack()
         if _TORCH_GREATER_EQUAL_2_0:
             stack.enter_context(self.root_device)
-        stack.enter_context(self.precision.init_context())
+        stack.enter_context(precision_init_ctx)
         return stack
 
     def module_init_context(self, empty_init: Optional[bool] = None) -> ContextManager:
@@ -135,10 +138,11 @@ class Strategy(ABC):
                 If ``None``, the strategy will decide. Some strategies may not support all options.
 
         """
+        tensor_init_ctx = self.tensor_init_context()
         stack = ExitStack()
         if _TORCH_GREATER_EQUAL_1_13:
             stack.enter_context(_EmptyInit(enabled=bool(empty_init)))
-        stack.enter_context(self.tensor_init_context())
+        stack.enter_context(tensor_init_ctx)
         return stack
 
     def setup_module_and_optimizers(

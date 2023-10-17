@@ -19,17 +19,17 @@ from pathlib import Path
 from typing import (
     Any,
     Callable,
-    cast,
     ContextManager,
     Dict,
     Generator,
     List,
     Mapping,
     Optional,
-    overload,
     Sequence,
     Tuple,
     Union,
+    cast,
+    overload,
 )
 
 import torch
@@ -41,12 +41,10 @@ from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import BatchSampler, DataLoader, DistributedSampler, RandomSampler, SequentialSampler
 
-from lightning.fabric.loggers import Logger
-from lightning.fabric.utilities.imports import _TORCH_GREATER_EQUAL_2_0
-
-from lightning.fabric.plugins import Precision  # avoid circular imports: # isort: split
 from lightning.fabric.accelerators.accelerator import Accelerator
-from lightning.fabric.connector import _Connector, _is_using_cli, _PLUGIN_INPUT, _PRECISION_INPUT
+from lightning.fabric.connector import _PLUGIN_INPUT, _PRECISION_INPUT, _Connector, _is_using_cli
+from lightning.fabric.loggers import Logger
+from lightning.fabric.plugins import Precision  # avoid circular imports: # isort: split
 from lightning.fabric.strategies import (
     DataParallelStrategy,
     DeepSpeedStrategy,
@@ -58,7 +56,7 @@ from lightning.fabric.strategies import (
 )
 from lightning.fabric.strategies.fsdp import _has_meta_device_parameters
 from lightning.fabric.strategies.launchers import _MultiProcessingLauncher, _XLALauncher
-from lightning.fabric.strategies.strategy import _Sharded, TBroadcast
+from lightning.fabric.strategies.strategy import TBroadcast, _Sharded
 from lightning.fabric.utilities import move_data_to_device
 from lightning.fabric.utilities.apply_func import convert_tensors_to_scalars, convert_to_tensors
 from lightning.fabric.utilities.data import (
@@ -68,6 +66,7 @@ from lightning.fabric.utilities.data import (
     has_iterable_dataset,
 )
 from lightning.fabric.utilities.distributed import DistributedSamplerWrapper
+from lightning.fabric.utilities.imports import _TORCH_GREATER_EQUAL_2_0
 from lightning.fabric.utilities.registry import _load_external_callbacks
 from lightning.fabric.utilities.seed import seed_everything
 from lightning.fabric.utilities.types import ReduceOp
@@ -120,7 +119,7 @@ class Fabric:
         strategy: Union[str, Strategy] = "auto",
         devices: Union[List[int], str, int] = "auto",
         num_nodes: int = 1,
-        precision: _PRECISION_INPUT = "32-true",
+        precision: Optional[_PRECISION_INPUT] = None,
         plugins: Optional[Union[_PLUGIN_INPUT, List[_PLUGIN_INPUT]]] = None,
         callbacks: Optional[Union[List[Any], Any]] = None,
         loggers: Optional[Union[Logger, List[Logger]]] = None,
@@ -403,6 +402,7 @@ class Fabric:
         Note:
             When using ``strategy="deepspeed"`` and multiple models were set up, it is required to pass in the
             model as argument here.
+
         """
         module = model._forward_module if model is not None else model
         if isinstance(self._strategy, DeepSpeedStrategy):
@@ -483,8 +483,8 @@ class Fabric:
         ...
 
     def to_device(self, obj: Union[nn.Module, Tensor, Any]) -> Union[nn.Module, Tensor, Any]:
-        r"""Move a :class:`torch.nn.Module` or a collection of tensors to the current device, if it is not already
-        on that device.
+        r"""Move a :class:`torch.nn.Module` or a collection of tensors to the current device, if it is not already on
+        that device.
 
         Args:
             obj: An object to move to the device. Can be an instance of :class:`torch.nn.Module`, a tensor, or a

@@ -19,7 +19,7 @@ from typing import Dict, List, Literal, Optional, Union
 
 import torch
 
-from lightning.fabric.connector import _convert_precision_to_unified_args, _PRECISION_INPUT, _PRECISION_INPUT_STR
+from lightning.fabric.connector import _PRECISION_INPUT, _PRECISION_INPUT_STR, _convert_precision_to_unified_args
 from lightning.fabric.plugins.environments import (
     ClusterEnvironment,
     LightningEnvironment,
@@ -36,13 +36,13 @@ from lightning.pytorch.accelerators.cuda import CUDAAccelerator
 from lightning.pytorch.accelerators.mps import MPSAccelerator
 from lightning.pytorch.accelerators.xla import XLAAccelerator
 from lightning.pytorch.plugins import (
+    PLUGIN_INPUT,
     CheckpointIO,
     DeepSpeedPrecisionPlugin,
     DoublePrecisionPlugin,
     FSDPPrecisionPlugin,
     HalfPrecisionPlugin,
     MixedPrecisionPlugin,
-    PLUGIN_INPUT,
     PrecisionPlugin,
     TransformerEnginePrecisionPlugin,
     XLAPrecisionPlugin,
@@ -82,7 +82,7 @@ class _AcceleratorConnector:
         accelerator: Union[str, Accelerator] = "auto",
         strategy: Union[str, Strategy] = "auto",
         plugins: Optional[Union[PLUGIN_INPUT, List[PLUGIN_INPUT]]] = None,
-        precision: _PRECISION_INPUT = "32-true",
+        precision: Optional[_PRECISION_INPUT] = None,
         sync_batchnorm: bool = False,
         benchmark: Optional[bool] = None,
         use_distributed_sampler: bool = True,
@@ -174,7 +174,7 @@ class _AcceleratorConnector:
         self,
         strategy: Union[str, Strategy],
         accelerator: Union[str, Accelerator],
-        precision: _PRECISION_INPUT,
+        precision: Optional[_PRECISION_INPUT],
         plugins: Optional[Union[PLUGIN_INPUT, List[PLUGIN_INPUT]]],
         sync_batchnorm: bool,
     ) -> None:
@@ -237,7 +237,7 @@ class _AcceleratorConnector:
 
         self._accelerator_flag = accelerator
 
-        self._precision_flag = _convert_precision_to_unified_args(precision)
+        precision_flag = _convert_precision_to_unified_args(precision)
 
         if plugins:
             plugins_flags_types: Dict[str, int] = Counter()
@@ -271,6 +271,14 @@ class _AcceleratorConnector:
                     f"Received multiple values for {', '.join(duplicated_plugin_key)} flags in `plugins`."
                     " Expected one value for each type at most."
                 )
+
+            if plugins_flags_types.get(PrecisionPlugin.__name__) and precision_flag is not None:
+                raise ValueError(
+                    f"Received both `precision={precision_flag}` and `plugins={self._precision_plugin_flag}`."
+                    f" Choose one."
+                )
+
+        self._precision_flag = "32-true" if precision_flag is None else precision_flag
 
         # handle the case when the user passes in a strategy instance which has an accelerator, precision,
         # checkpoint io or cluster env set up
@@ -317,11 +325,10 @@ class _AcceleratorConnector:
                     self._accelerator_flag = "cuda"
                 self._parallel_devices = self._strategy_flag.parallel_devices
 
-    def _check_device_config_and_set_final_flags(
-        self,
-        devices: Union[List[int], str, int],
-        num_nodes: int,
-    ) -> None:
+    def _check_device_config_and_set_final_flags(self, devices: Union[List[int], str, int], num_nodes: int) -> None:
+        if not isinstance(num_nodes, int) or num_nodes < 1:
+            raise ValueError(f"`num_nodes` must be a positive integer, but got {num_nodes}.")
+
         self._num_nodes_flag = num_nodes
         self._devices_flag = devices
 
@@ -411,8 +418,9 @@ class _AcceleratorConnector:
         if isinstance(self._cluster_environment_flag, ClusterEnvironment):
             return self._cluster_environment_flag
         for env_type in (
-            SLURMEnvironment,
+            # TorchElastic has the highest priority since it can also be used inside SLURM
             TorchElasticEnvironment,
+            SLURMEnvironment,
             LSFEnvironment,
             MPIEnvironment,
         ):
@@ -528,7 +536,7 @@ class _AcceleratorConnector:
             if isinstance(self.strategy, ColossalAIStrategy):
                 return ColossalAIPrecisionPlugin(self._precision_flag)
 
-        if isinstance(self.accelerator, XLAAccelerator):
+        if isinstance(self.strategy, (SingleDeviceXLAStrategy, XLAStrategy)):
             return XLAPrecisionPlugin(self._precision_flag)  # type: ignore
         if isinstance(self.strategy, DeepSpeedStrategy):
             return DeepSpeedPrecisionPlugin(self._precision_flag)  # type: ignore[arg-type]
@@ -541,7 +549,9 @@ class _AcceleratorConnector:
         if self._precision_flag == "64-true":
             return DoublePrecisionPlugin()
         if self._precision_flag == "transformer-engine":
-            return TransformerEnginePrecisionPlugin()
+            return TransformerEnginePrecisionPlugin(dtype=torch.bfloat16)
+        if self._precision_flag == "transformer-engine-float16":
+            return TransformerEnginePrecisionPlugin(dtype=torch.float16)
 
         if self._precision_flag == "16-mixed" and self._accelerator_flag == "cpu":
             rank_zero_warn(
@@ -561,15 +571,6 @@ class _AcceleratorConnector:
 
     def _validate_precision_choice(self) -> None:
         """Validate the combination of choices for precision, AMP type, and accelerator."""
-        if (
-            isinstance(self.accelerator, XLAAccelerator)
-            and self._precision_plugin_flag
-            and not isinstance(self._precision_plugin_flag, XLAPrecisionPlugin)
-        ):
-            raise ValueError(
-                f"The `XLAAccelerator` can only be used with a `XLAPrecisionPlugin`,"
-                f" found: {self._precision_plugin_flag}."
-            )
         if _lightning_habana_available():
             from lightning_habana import HPUAccelerator
 

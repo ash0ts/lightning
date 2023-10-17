@@ -19,7 +19,7 @@ Comet Logger
 import logging
 import os
 from argparse import Namespace
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Union
 
 from lightning_utilities.core.imports import RequirementCache
 from torch import Tensor
@@ -29,6 +29,9 @@ from lightning.fabric.utilities.logger import _add_prefix, _convert_params, _fla
 from lightning.pytorch.loggers.logger import Logger, rank_zero_experiment
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
+
+if TYPE_CHECKING:
+    from comet_ml import ExistingExperiment, Experiment, OfflineExperiment
 
 log = logging.getLogger(__name__)
 _COMET_AVAILABLE = RequirementCache("comet-ml>=3.31.0", module="comet_ml")
@@ -84,7 +87,7 @@ class CometLogger(Logger):
 
     **Log Hyperparameters:**
 
-    Log parameters used to initialize a :class:`~lightning.pytorch.core.module.LightningModule`:
+    Log parameters used to initialize a :class:`~lightning.pytorch.core.LightningModule`:
 
     .. code-block:: python
 
@@ -255,10 +258,9 @@ class CometLogger(Logger):
 
     @property
     @rank_zero_experiment
-    def experiment(self) -> Any:
-        r"""
-        Actual Comet object. To use Comet features in your
-        :class:`~lightning.pytorch.core.module.LightningModule` do the following.
+    def experiment(self) -> Union["Experiment", "ExistingExperiment", "OfflineExperiment"]:
+        r"""Actual Comet object. To use Comet features in your :class:`~lightning.pytorch.core.LightningModule` do the
+        following.
 
         Example::
 
@@ -324,14 +326,13 @@ class CometLogger(Logger):
 
     @rank_zero_only
     def finalize(self, status: str) -> None:
-        r"""
-        When calling ``self.experiment.end()``, that experiment won't log any more data to Comet.
-        That's why, if you need to log any more data, you need to create an ExistingCometExperiment.
-        For example, to log data when testing your model after training, because when training is
-        finalized :meth:`CometLogger.finalize` is called.
+        r"""When calling ``self.experiment.end()``, that experiment won't log any more data to Comet. That's why, if you
+        need to log any more data, you need to create an ExistingCometExperiment. For example, to log data when testing
+        your model after training, because when training is finalized :meth:`CometLogger.finalize` is called.
 
         This happens automatically in the :meth:`~CometLogger.experiment` property, when
         ``self._experiment`` is set to ``None``, i.e. ``self.reset_experiment()``.
+
         """
         if self._experiment is None:
             # When using multiprocessing, finalize() should be a no-op on the main process, as no experiment has been
